@@ -103,29 +103,26 @@ class Canvas:
         self.rect(x, y, 1, h, c)
 
     def line(self, x0, y0, x1, y1, c):
-        """Bresenham line."""
-        dx = abs(x1 - x0)
-        dy = -abs(y1 - y0)
-        sx = 1 if x0 < x1 else -1
-        sy = 1 if y0 < y1 else -1
-        err = dx + dy
-        while True:
-            self.px(x0, y0, c)
-            if x0 == x1 and y0 == y1:
-                break
-            e2 = 2 * err
-            if e2 >= dy:
-                err += dy
-                x0 += sx
-            if e2 <= dx:
-                err += dx
-                y0 += sy
+        """Straight line by digital differential steps."""
+        steps = max(1, max(abs(x1 - x0), abs(y1 - y0)))
+        dx = (x1 - x0) / steps
+        dy = (y1 - y0) / steps
+        for i in range(steps + 1):
+            self.px(round(x0 + dx * i), round(y0 + dy * i), c)
 
     def disc(self, cx, cy, r, c):
-        """Filled circle via horizontal spans."""
-        for dy in range(-r, r + 1):
-            dx = int(sqrt(r * r - dy * dy))
-            self.rect(cx - dx, cy + dy, 2 * dx + 1, 1, c)
+        """Filled disc, swept row by row from the centre outward."""
+        for dy in range(0, r + 1):
+            half = int(sqrt(r * r - dy * dy))
+            self.rect(cx - half, cy - dy, 2 * half + 1, 1, c)
+            if dy:
+                self.rect(cx - half, cy + dy, 2 * half + 1, 1, c)
+
+    def ring(self, cx, cy, r, c):
+        """A one-pixel outline circle, for emblems and ornaments."""
+        for ang in range(360):
+            rad = radians(ang)
+            self.px(cx + int(r * cos(rad)), cy + int(r * sin(rad)), c)
 
     def poly(self, pts, c):
         """Fill a polygon with a scanline fill."""
@@ -149,13 +146,16 @@ class Canvas:
                 self.rect(int(xs[0]), y, int(xs[-1]) - int(xs[0]) + 1, 1, c)
 
     def vgrad(self, x, y, w, h, top, bottom):
-        """Vertical gradient, top colour to bottom colour."""
-        for i in range(h):
-            t = i / max(1, h - 1)
-            c = (int(top[0] + (bottom[0] - top[0]) * t),
-                 int(top[1] + (bottom[1] - top[1]) * t),
-                 int(top[2] + (bottom[2] - top[2]) * t))
-            self.rect(x, y + i, w, 1, c)
+        """Blend from the top colour down to the bottom colour."""
+        steps = max(1, h - 1)
+        dr = (bottom[0] - top[0]) / steps
+        dg = (bottom[1] - top[1]) / steps
+        db = (bottom[2] - top[2]) / steps
+        for row in range(h):
+            shade = (int(top[0] + dr * row),
+                     int(top[1] + dg * row),
+                     int(top[2] + db * row))
+            self.rect(x, y + row, w, 1, shade)
 
 
 # ---------------------------------------------------------------- PNG out
@@ -169,13 +169,15 @@ def write_png(cv, path):
     comp = zlib.compress(bytes(raw), 6)
 
     def chunk(kind, data):
-        out = struct.pack(">I", len(data)) + kind + data
-        out += struct.pack(">I", binascii.crc32(kind + data) & 0xFFFFFFFF)
-        return out
+        body = kind + data
+        head = struct.pack(">I", len(data))
+        tail = struct.pack(">I", binascii.crc32(body) & 0xFFFFFFFF)
+        return head + body + tail
 
     ihdr = struct.pack(">IIBBBBB", cv.w, cv.h, 8, 2, 0, 0, 0)
-    png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
-           + chunk(b"IDAT", comp) + chunk(b"IEND", b""))
+    magic = b"\x89PNG\r\n\x1a\n"
+    png = magic + chunk(b"IHDR", ihdr) + chunk(b"IDAT", comp)
+    png += chunk(b"IEND", b"")
     with open(path, "wb") as f:
         f.write(png)
     return len(png)
@@ -496,23 +498,23 @@ def scene_pyongyang(cv, x, y, w, h):
 # ---------------------------------------------------------------- panels
 def panel(cv, x, y, w, h):
     cv.rect(x, y, w, h, PANEL)
-    cv.rect(x, y, w, 2, INK)
-    cv.rect(x, y + h - 2, w, 2, INK)
-    cv.rect(x, y, 2, h, INK)
-    cv.rect(x + w - 2, y, 2, h, INK)
+    edges = ((x, y, w, 2), (x, y + h - 2, w, 2),
+             (x, y, 2, h), (x + w - 2, y, 2, h))
+    for (ex, ey, ew, eh) in edges:
+        cv.rect(ex, ey, ew, eh, INK)
 
 
 def story_text(cv, x, y, w, headline, caption, hscale=2, cscale=2):
     """Headline lines then caption lines inside a panel text zone."""
-    cy = y
+    yy = y
     for line in headline:
-        draw_text(cv, x, cy, line, hscale, INK)
-        cy += 7 * hscale + 4
-    cy += 2
+        draw_text(cv, x, yy, line, hscale, INK)
+        yy += 7 * hscale + 4
+    yy += 2
     for line in caption:
-        draw_text(cv, x, cy, line, cscale, (70, 70, 74))
-        cy += 7 * cscale + 3
-    return cy
+        draw_text(cv, x, yy, line, cscale, (70, 70, 74))
+        yy += 7 * cscale + 3
+    return yy
 
 
 # ---------------------------------------------------------------- compose
@@ -522,6 +524,11 @@ def compose():
     # header band
     cv.rect(0, 0, W, 100, NAVY)
     cv.rect(0, 100, W, 4, GOLD)
+    # small globe emblem at the left of the masthead
+    cv.ring(54, 50, 27, GOLD)
+    cv.ring(54, 50, 19, GOLD)
+    cv.vline(54, 23, 54, GOLD)
+    cv.hline(27, 50, 54, GOLD)
     draw_centred(cv, W // 2, 14, "WORLD NEWS", 6, (250, 248, 240))
     draw_centred(cv, W // 2, 66, "THURSDAY 26 NOVEMBER 2026", 3, GOLD)
 
